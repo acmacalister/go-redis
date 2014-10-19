@@ -15,9 +15,29 @@ import (
 
 var addr = flag.Int("addr", 6379, "http service address")
 
+const (
+	CommandKey = iota
+	CommandString
+	CommandHash
+	CommandList
+	CommandSet
+	CommandSortedSet
+	CommandHyperLogLog
+	CommandPubSub
+	CommandTransaction
+	CommandConnection
+	CommandServer
+)
+
+// Struct for what type we are storing in our store.
+type storeItem struct {
+	val         string
+	commandType int
+}
+
 // Mutex Locked map/dictionary
 type store struct {
-	dict map[string]string
+	dict map[string]storeItem
 	lock *sync.RWMutex
 }
 
@@ -48,7 +68,7 @@ func main() {
 	}
 }
 
-func (store *store) Get(key string) string {
+func (store *store) Get(key string) storeItem {
 	store.lock.RLock()
 	defer store.lock.RUnlock()
 
@@ -59,6 +79,7 @@ func (store *store) Set(key string, val string) {
 	store.lock.Lock()
 	defer store.lock.Unlock()
 
+	item := storeItem{val: val, commandType: CommandString}
 	store.dict[key] = val
 }
 
