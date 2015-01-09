@@ -4,22 +4,21 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"github.com/acmacalister/skittles"
 	"log"
 	"net"
 	"net/textproto"
 	"strings"
 	"sync"
+
+	"github.com/acmacalister/skittles"
+	"github.com/davecheney/profile"
 )
 
 var addr = flag.Int("addr", 6379, "http service address")
 var textprotoReaderPool sync.Pool
 
 const (
-	carReturn  = "\r\n"
-	commandGet = "GET"
-	commandSet = "SET"
-	typeKey    = iota
+	typeKey = iota
 	typeString
 	typeHash
 	typeList
@@ -40,8 +39,8 @@ type storeItem struct {
 
 // Mutex Locked map/dictionary
 type store struct {
-	dict map[string]*storeItem
 	lock *sync.RWMutex
+	dict map[string]*storeItem
 }
 
 // Our server's "client" for processing redis commands.
@@ -52,13 +51,14 @@ type client struct {
 }
 
 func main() {
+	defer profile.Start(profile.CPUProfile).Stop()
 	fmt.Println(skittles.Cyan("Redis Server started..."))
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", *addr))
 	if err != nil {
 		log.Fatal(skittles.BoldRed(err))
 	}
 
-	s := store{dict: make(map[string]*storeItem), lock: &sync.RWMutex{}}
+	s := store{dict: make(map[string]*storeItem), lock: new(sync.RWMutex)}
 
 	for {
 		conn, err := ln.Accept()
@@ -67,11 +67,11 @@ func main() {
 			continue
 		}
 		c := client{conn: conn, store: &s}
-		go c.process()
+		go c.handleConnection()
 	}
 }
 
-//create a new reader from the pool
+//create a new reader from the pool.
 func newTextprotoReader(br *bufio.Reader) *textproto.Reader {
 	if v := textprotoReaderPool.Get(); v != nil {
 		tr := v.(*textproto.Reader)
@@ -87,54 +87,45 @@ func putTextprotoReader(r *textproto.Reader) {
 	textprotoReaderPool.Put(r)
 }
 
-func (store *store) Get(key string) *storeItem {
-	store.lock.RLock()
-	defer store.lock.RUnlock()
-
-	return store.dict[key]
-}
-
-func (store *store) Set(key string, val interface{}) {
-	store.lock.Lock()
-	defer store.lock.Unlock()
-
-	item := storeItem{val: val, redisType: typeString}
-	store.dict[key] = &item
-}
-
-func (c *client) process() {
+// handleConnection processes the tcp connection.
+func (c *client) handleConnection() {
 	defer c.conn.Close()
 	c.reader = bufio.NewReader(c.conn)
 	tp := newTextprotoReader(c.reader)
-
-	respString := make([]string, 0, 5)
-	for {
-		s, err := tp.ReadLine()
-		if err != nil {
-			fmt.Println(err)
-			break
-		}
-		respString = append(respString, s)
-		if c.reader.Buffered() == 0 {
-			break
-		}
-	}
 	defer func() {
 		putTextprotoReader(tp)
 	}()
-	response := c.handleRESPCommand(respString)
-	c.conn.Write([]byte(response))
+
+	for {
+		respString := make([]string, 0, 5)
+		for {
+			s, err := tp.ReadLine()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			respString = append(respString, s)
+			if c.reader.Buffered() == 0 {
+				break
+			}
+		}
+
+		response := c.handleRESPCommand(respString)
+		c.conn.Write([]byte(response))
+	}
 }
 
 func (c *client) handleRESPCommand(values []string) string {
 	command := values[2:3]
 	switch strings.ToUpper(command[0]) {
 	case commandGet:
-		val := values[len(values)-1 : len(values)] //get the last value.
+		val := values[len(values)-1 : len(values)]
 		return c.buildRESPResponseString(c.store.Get(val[0]))
 	case commandSet:
-		c.store.Set("", "")
-		return "$2\r\nOK\r\n"
+		key := values[4:5]
+		val := values[len(values)-1 : len(values)]
+		c.store.Set(key[0], val[0])
+		return "+OK\r\n"
 	}
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", command)
 }
